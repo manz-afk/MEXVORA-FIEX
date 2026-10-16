@@ -7,7 +7,7 @@ import 'settings.dart';
 
 class Api {
   static const defaultBase = 'http://38.253.224.75:3205';
-  static const gistUrl = 'https://gist.githubusercontent.com/bindreperputra-dev/629482a3403471d3c7fb9b37094c39d1/raw/gistfile1.txt';
+  static const gistUrl = 'https://gist.github.com/manz-afk/d6fb2947797f451bca9684d991e305ba';
   static String base = '';
   static String token = '';
   static Map<String, dynamic> me = {};
