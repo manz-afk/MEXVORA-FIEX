@@ -1,7 +1,0 @@
-name: Tes
-on: [push, workflow_dispatch]
-jobs:
-  tes:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "Actions hidup"
