@@ -91,16 +91,11 @@ jobs:
           cp -r /tmp/nx/android android
           if [ -d /tmp/android_old ]; then
             cp -r /tmp/android_old/app/src/main/res/mipmap-* android/app/src/main/res/ 2>/dev/null || true
-            python3 - <<'PY'
-          import re
-          old = open('/tmp/android_old/app/src/main/AndroidManifest.xml').read()
-          perms = sorted(set(re.findall(r'<uses-permission[^>]*>', old)))
-          p = 'android/app/src/main/AndroidManifest.xml'
-          m = open(p).read()
-          if perms:
-              m = m.replace('<application', '\n    '.join(perms) + '\n    <application', 1)
-              open(p, 'w').write(m)
-          PY
+            grep -h "<uses-permission" /tmp/android_old/app/src/main/AndroidManifest.xml | sort -u > /tmp/perms.txt || true
+            if [ -s /tmp/perms.txt ]; then
+              awk 'FNR==NR{p=p $0 "\n"; next} /<application/ && !d {printf "%s", p; d=1} {print}' /tmp/perms.txt android/app/src/main/AndroidManifest.xml > /tmp/m.xml
+              mv /tmp/m.xml android/app/src/main/AndroidManifest.xml
+            fi
           fi
 
       - name: Build APK
