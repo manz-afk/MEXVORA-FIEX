@@ -1,0 +1,141 @@
+name: Flutter Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: URL ZIP project Flutter
+        required: true
+      tag:
+        description: Tag release
+        required: true
+      build_type:
+        description: debug atau release
+        required: false
+        default: release
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ZIP_URL: ${{ inputs.zip_url }}
+      TAG: ${{ inputs.tag }}
+      BUILD_TYPE: ${{ inputs.build_type || 'release' }}
+    steps:
+      - name: Cek input
+        run: |
+          [ -n "$ZIP_URL" ] || { echo "::error::Input zip_url kosong."; exit 1; }
+          [ -n "$TAG" ] || { echo "::error::Input tag kosong."; exit 1; }
+
+      - name: Download dan siapkan project
+        run: |
+          set -e
+          curl -fL --retry 3 -o project.zip "$ZIP_URL"
+          mkdir -p src
+          unzip -oq project.zip -d src
+          P=$(find src -maxdepth 4 -name pubspec.yaml -not -path '*__MACOSX*' | head -1)
+          if [ -z "$P" ]; then
+            echo "::error::pubspec.yaml tidak ditemukan di dalam ZIP. Pastikan ZIP berisi project Flutter yang valid (pubspec.yaml di root project)."
+            exit 1
+          fi
+          cd "$(dirname "$P")"
+          # Project versi file datar (nama file pakai "__" sebagai pemisah folder)
+          if [ ! -f lib/main.dart ] && [ -f lib__main.dart ]; then
+            for f in *__*; do
+              [ -f "$f" ] || continue
+              d="${f//__//}"
+              mkdir -p "$(dirname "$d")"
+              mv "$f" "$d"
+            done
+          fi
+          [ -f lib/main.dart ] || { echo "::error::lib/main.dart tidak ditemukan di project."; exit 1; }
+          echo "PROJ=$(pwd)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Siapkan folder android
+        run: |
+          set -e
+          cd "$PROJ"
+          if [ -f tools/build.sh ]; then
+            echo "Project punya tools/build.sh, dilewati"; exit 0
+          fi
+          if grep -qs "dev.flutter.flutter-gradle-plugin" android/settings.gradle* ; then
+            echo "android/ sudah modern, dilewati"; exit 0
+          fi
+          OLD=""
+          if [ -d android ]; then
+            OLD=$(grep -hoE 'applicationId[ =]+"[^"]+"' android/app/build.gradle* 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)"/\1/' || true)
+            [ -n "$OLD" ] || OLD=$(grep -oE 'package="[^"]+"' android/app/src/main/AndroidManifest.xml 2>/dev/null | head -1 | sed -E 's/package="([^"]+)"/\1/' || true)
+          fi
+          PN=$(grep -m1 '^name:' pubspec.yaml | sed 's/name:[ ]*//' | tr -d '\r ')
+          ORG="${OLD%.*}"; NAME="${OLD##*.}"
+          if [ -z "$OLD" ] || ! echo "$NAME" | grep -qE '^[a-z][a-z0-9_]*$'; then
+            ORG=com.example; NAME="$PN"
+          fi
+          if [ -d android ]; then mv android /tmp/android_old; fi
+          flutter create --org "$ORG" --project-name "$NAME" --platforms android /tmp/nx \
+            || flutter create --org com.example --project-name app --platforms android /tmp/nx
+          cp -r /tmp/nx/android android
+          if [ -d /tmp/android_old ]; then
+            cp -r /tmp/android_old/app/src/main/res/mipmap-* android/app/src/main/res/ 2>/dev/null || true
+            python3 - <<'PY'
+          import re
+          old = open('/tmp/android_old/app/src/main/AndroidManifest.xml').read()
+          perms = sorted(set(re.findall(r'<uses-permission[^>]*>', old)))
+          p = 'android/app/src/main/AndroidManifest.xml'
+          m = open(p).read()
+          if perms:
+              m = m.replace('<application', '\n    '.join(perms) + '\n    <application', 1)
+              open(p, 'w').write(m)
+          PY
+          fi
+
+      - name: Build APK
+        run: |
+          set -e
+          cd "$PROJ"
+          if [ -f tools/build.sh ]; then
+            bash tools/build.sh
+            APK=$(ls dist/*.apk | head -1)
+          else
+            flutter pub get
+            PUBC="${PUB_CACHE:-$HOME/.pub-cache}"
+            { grep -rl "proguard-android.txt" "$PUBC" --include=build.gradle --include=build.gradle.kts 2>/dev/null || true; } \
+              | xargs -r sed -i 's/proguard-android\.txt/proguard-android-optimize.txt/g' || true
+            if [ "$BUILD_TYPE" = "debug" ]; then
+              flutter build apk --debug
+              APK=build/app/outputs/flutter-apk/app-debug.apk
+            else
+              flutter build apk --release
+              APK=build/app/outputs/flutter-apk/app-release.apk
+            fi
+          fi
+          mkdir -p /tmp/out
+          cp "$APK" "/tmp/out/app-$BUILD_TYPE.apk"
+
+      - name: Upload ke Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag -y || true
+          gh release create "$TAG" "/tmp/out/app-$BUILD_TYPE.apk" \
+            --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Build $BUILD_TYPE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: /tmp/out/*.apk
+          compression-level: 0
